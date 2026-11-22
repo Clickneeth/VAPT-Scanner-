@@ -13,10 +13,11 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 sanitize() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }
 # md_cell: one line, safe inside a Markdown table cell (no pipes, no HTML, no backticks).
 md_cell() {
-  local t; t="$(printf '%s' "$1" | sanitize | tr '\n' ' ')"
-  t="${t//|//}"; t="${t//</&lt;}"; t="${t//>/&gt;}"; local q="'"; t="${t//\`/$q}"
-  printf '%s' "$t"
+  printf '%s' "$1" | sanitize | tr '\n' ' ' | sed -e 's/|/\//g' -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
+    -e 's/`/\&#96;/g' -e 's/\[/\&#91;/g' -e 's/\]/\&#93;/g' -e 's/(/\&#40;/g' -e 's/)/\&#41;/g' -e 's/!/\&#33;/g'
 }
+# one_line: plain text for machine-readable output (the UI renders it as text, so no Markdown escaping here).
+one_line() { printf '%s' "$1" | sanitize | tr '\n\t' '  '; }
 info()    { printf '%b[*]%b %s\n' "$CYAN" "$RESET" "$(printf '%s' "$*" | sanitize)"; }
 success() { printf '%b[+]%b %s\n' "$GREEN" "$RESET" "$(printf '%s' "$*" | sanitize)"; }
 warn()    { printf '%b[!]%b %s\n' "$YELLOW" "$RESET" "$(printf '%s' "$*" | sanitize)"; }
@@ -165,16 +166,16 @@ add_finding() {
   local title detail
   title="$(md_cell "$2")"; detail="$(md_cell "$3")"
   FINDINGS+=("${sev}|${title}|${detail}")
-  # VAPT_FINDINGS_FILE: the web UI reads findings from here (tab separated: severity, title, detail).
+  # VAPT_FINDINGS_FILE: the web UI reads findings from here (tab separated: severity, title, detail), plain text.
   if [[ -n "${VAPT_FINDINGS_FILE:-}" ]]; then
-    printf '%s\t%s\t%s\n' "$sev" "${title//$'\t'/ }" "${detail//$'\t'/ }" >> "$VAPT_FINDINGS_FILE" || true
+    printf '%s\t%s\t%s\n' "$sev" "$(one_line "$2")" "$(one_line "$3")" >> "$VAPT_FINDINGS_FILE" || true
   fi
   case "$sev" in
-    CRITICAL) error  "[CRITICAL] $title — $detail" ;;
-    HIGH)     error  "[HIGH]     $title — $detail" ;;
-    MEDIUM)   warn   "[MEDIUM]   $title — $detail" ;;
-    LOW)      warn   "[LOW]      $title — $detail" ;;
-    INFO)     info   "[INFO]     $title — $detail" ;;
+    CRITICAL) error  "[CRITICAL] $2 — $3" ;;
+    HIGH)     error  "[HIGH]     $2 — $3" ;;
+    MEDIUM)   warn   "[MEDIUM]   $2 — $3" ;;
+    LOW)      warn   "[LOW]      $2 — $3" ;;
+    INFO)     info   "[INFO]     $2 — $3" ;;
   esac
 }
 
@@ -201,7 +202,8 @@ fi
 # Normalise: strip trailing slash
 RAW_TARGET="$(printf '%s' "$RAW_TARGET" | sanitize)"
 # only characters that can appear in a URL, host or IP: nothing a shell or a tool flag could misread
-if [[ ! "$RAW_TARGET" =~ ^[A-Za-z0-9._:/@%?=\&~+\[\]-]+$ || "$RAW_TARGET" == -* ]]; then
+TARGET_RE='^[][A-Za-z0-9._:/@%?=&~+-]+$'
+if [[ ! "$RAW_TARGET" =~ $TARGET_RE || "$RAW_TARGET" == -* ]]; then
   error "Target contains characters that are not allowed. Exiting."
   exit 1
 fi
@@ -209,6 +211,13 @@ RAW_TARGET="${RAW_TARGET%/}"
 
 # Derive host (strip scheme)
 HOST="${RAW_TARGET#http://}"; HOST="${HOST#https://}"; HOST="${HOST%%/*}"
+
+# The derived host is what every tool receives as an argument: hostname/IP characters only, never a flag.
+HOST_RE='^[][A-Za-z0-9.:-]+$'
+if [[ -z "$HOST" || ! "$HOST" =~ $HOST_RE || "$HOST" == -* ]]; then
+  error "Host '$HOST' is not a valid hostname or IP. Exiting."
+  exit 1
+fi
 
 # Derive base URL with scheme
 if [[ "$RAW_TARGET" =~ ^https?:// ]]; then
