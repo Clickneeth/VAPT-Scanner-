@@ -23,6 +23,8 @@ def fresh_db(monkeypatch):
     from vaptui import discovery, runner
     monkeypatch.setattr(discovery, "start", lambda tid: None)
     monkeypatch.setattr(runner, "start", lambda: None)
+    # tests use made-up hostnames: resolve them to a public documentation-range address (never real DNS)
+    monkeypatch.setattr(runner.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))])
     yield
 
 
