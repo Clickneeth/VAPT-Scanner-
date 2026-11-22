@@ -8,10 +8,19 @@ set -euo pipefail
 RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
-info()    { echo -e "${CYAN}[*]${RESET} $*"; }
-success() { echo -e "${GREEN}[+]${RESET} $*"; }
-warn()    { echo -e "${YELLOW}[!]${RESET} $*"; }
-error()   { echo -e "${RED}[-]${RESET} $*"; }
+# ─── Untrusted-text hygiene (everything that came from a scanned host is hostile) ──
+# sanitize: strip control characters incl. ESC, so a hostile banner cannot drive the terminal or the log viewer.
+sanitize() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }
+# md_cell: one line, safe inside a Markdown table cell (no pipes, no HTML, no backticks).
+md_cell() {
+  local t; t="$(printf '%s' "$1" | sanitize | tr '\n' ' ')"
+  t="${t//|//}"; t="${t//</&lt;}"; t="${t//>/&gt;}"; local q="'"; t="${t//\`/$q}"
+  printf '%s' "$t"
+}
+info()    { printf '%b[*]%b %s\n' "$CYAN" "$RESET" "$(printf '%s' "$*" | sanitize)"; }
+success() { printf '%b[+]%b %s\n' "$GREEN" "$RESET" "$(printf '%s' "$*" | sanitize)"; }
+warn()    { printf '%b[!]%b %s\n' "$YELLOW" "$RESET" "$(printf '%s' "$*" | sanitize)"; }
+error()   { printf '%b[-]%b %s\n' "$RED" "$RESET" "$(printf '%s' "$*" | sanitize)"; }
 banner()  { echo -e "\n${BOLD}${CYAN}══════════════════════════════════════${RESET}"; echo -e "${BOLD} $*${RESET}"; echo -e "${BOLD}${CYAN}══════════════════════════════════════${RESET}"; }
 
 # ─── Built-in wordlist (embedded so ffuf always has something) ──────────────
@@ -120,6 +129,11 @@ trap cleanup EXIT
 
 # ─── Helper: require tool ───────────────────────────────────────────────────
 require() {
+  # VAPT_SKIP_TOOLS="ffuf,katana": comma list set by the web UI scan profiles; skipped tools never run.
+  if [[ ",${VAPT_SKIP_TOOLS:-}," == *",$1,"* ]]; then
+    info "Skipping '$1' (disabled by scan profile)."
+    return 1
+  fi
   if ! command -v "$1" &>/dev/null; then
     warn "Tool '$1' not found — skipping this step."
     return 1
@@ -141,11 +155,20 @@ run_capped() {
 REPORT_FILE=""
 FINDINGS=()   # severity|title|detail
 
-report_line() { echo "$1" >> "$REPORT_FILE"; }
+report_line() { printf '%s\n' "$1" >> "$REPORT_FILE"; }
+# append_block: raw tool output into a fenced block; sanitised, and ``` neutralised so it cannot close the fence.
+append_stdin() { sanitize | sed 's/```/` ` `/g' >> "$REPORT_FILE" || true; }
+append_block() { [[ -f "$1" ]] && append_stdin < "$1" || true; }
 
 add_finding() {
-  local sev="$1" title="$2" detail="$3"
+  local sev; sev="$(printf '%s' "$1" | sanitize)"
+  local title detail
+  title="$(md_cell "$2")"; detail="$(md_cell "$3")"
   FINDINGS+=("${sev}|${title}|${detail}")
+  # VAPT_FINDINGS_FILE: the web UI reads findings from here (tab separated: severity, title, detail).
+  if [[ -n "${VAPT_FINDINGS_FILE:-}" ]]; then
+    printf '%s\t%s\t%s\n' "$sev" "${title//$'\t'/ }" "${detail//$'\t'/ }" >> "$VAPT_FINDINGS_FILE" || true
+  fi
   case "$sev" in
     CRITICAL) error  "[CRITICAL] $title — $detail" ;;
     HIGH)     error  "[HIGH]     $title — $detail" ;;
@@ -176,6 +199,12 @@ if [[ -z "$RAW_TARGET" ]]; then
 fi
 
 # Normalise: strip trailing slash
+RAW_TARGET="$(printf '%s' "$RAW_TARGET" | sanitize)"
+# only characters that can appear in a URL, host or IP: nothing a shell or a tool flag could misread
+if [[ ! "$RAW_TARGET" =~ ^[A-Za-z0-9._:/@%?=\&~+\[\]-]+$ || "$RAW_TARGET" == -* ]]; then
+  error "Target contains characters that are not allowed. Exiting."
+  exit 1
+fi
 RAW_TARGET="${RAW_TARGET%/}"
 
 # Derive host (strip scheme)
@@ -249,7 +278,7 @@ if require dig; then
   } | tee "$DNS_OUT"
   report_line "### DNS Records"
   report_line "\`\`\`"
-  cat "$DNS_OUT" >> "$REPORT_FILE"
+  append_block "$DNS_OUT"
   report_line "\`\`\`"
   report_line ""
 
@@ -273,7 +302,7 @@ if require subfinder; then
   success "Found $SUB_COUNT subdomains → $SUB_OUT"
   report_line "### Subdomains (subfinder)"
   report_line "\`\`\`"
-  cat "$SUB_OUT" >> "$REPORT_FILE" 2>/dev/null || true
+  append_block "$SUB_OUT"
   report_line "\`\`\`"
   report_line ""
 fi
@@ -354,7 +383,7 @@ if require curl; then
   report_line ""
   report_line "### Raw Headers"
   report_line "\`\`\`"
-  cat "$HEADERS_OUT" >> "$REPORT_FILE" 2>/dev/null || true
+  append_block "$HEADERS_OUT"
   report_line "\`\`\`"
   report_line ""
 
@@ -402,7 +431,7 @@ if require nmap; then
   fi
 
   report_line "\`\`\`"
-  cat "$NMAP_OUT" >> "$REPORT_FILE" 2>/dev/null || true
+  append_block "$NMAP_OUT"
   report_line "\`\`\`"
   report_line ""
 fi
@@ -439,7 +468,7 @@ except:
 
     if [[ -n "$FOUND_PATHS" ]]; then
       success "Discovered paths:"
-      echo "$FOUND_PATHS"
+      printf '%s\n' "$FOUND_PATHS" | sanitize
       # Flag sensitive paths
       while IFS= read -r line; do
         PATH_URL=$(echo "$line" | awk '{print $2}')
@@ -453,7 +482,7 @@ except:
     fi
 
     report_line "\`\`\`"
-    echo "$FOUND_PATHS" >> "$REPORT_FILE" 2>/dev/null || true
+    printf '%s\n' "$FOUND_PATHS" | append_stdin
     report_line "\`\`\`"
     report_line ""
   fi
@@ -472,9 +501,9 @@ if require httpx; then
   echo "$BASE_URL" | httpx -tech-detect -status-code -title -follow-redirects \
                             -silent -o "$HTTPX_OUT" 2>/dev/null || true
   success "Tech detection:"
-  cat "$HTTPX_OUT" 2>/dev/null || true
+  sanitize < "$HTTPX_OUT" 2>/dev/null || true
   report_line "\`\`\`"
-  cat "$HTTPX_OUT" >> "$REPORT_FILE" 2>/dev/null || true
+  append_block "$HTTPX_OUT"
   report_line "\`\`\`"
   report_line ""
 fi
@@ -497,7 +526,7 @@ if require katana; then
   INTERESTING=$(grep -iE "\.(php|asp|aspx|jsp|cgi)|api/|admin|login|upload|export|import|sql|backup|debug" "$KATANA_OUT" 2>/dev/null || true)
   if [[ -n "$INTERESTING" ]]; then
     warn "Interesting endpoints found:"
-    echo "$INTERESTING"
+    printf '%s\n' "$INTERESTING" | sanitize
     add_finding "INFO" "Interesting endpoints crawled" "$(echo "$INTERESTING" | wc -l | xargs) endpoints — see katana.txt"
   fi
 
@@ -525,7 +554,7 @@ if require nuclei; then
   if [[ -s "$NUCLEI_OUT" ]]; then
     NUCLEI_COUNT=$(wc -l < "$NUCLEI_OUT")
     warn "Nuclei found $NUCLEI_COUNT issue(s):"
-    cat "$NUCLEI_OUT"
+    sanitize < "$NUCLEI_OUT"
     while IFS= read -r line; do
       SEV=$(echo "$line" | grep -oE '\[(critical|high|medium|low|info)\]' | tr -d '[]' | tr '[:lower:]' '[:upper:]' || echo "MEDIUM")
       add_finding "$SEV" "Nuclei: $line" "See nuclei.txt"
@@ -535,7 +564,7 @@ if require nuclei; then
   fi
 
   report_line "\`\`\`"
-  cat "$NUCLEI_OUT" >> "$REPORT_FILE" 2>/dev/null || true
+  append_block "$NUCLEI_OUT"
   report_line "\`\`\`"
   report_line ""
 fi
@@ -585,7 +614,7 @@ elif require testssl.sh; then
   fi
 
   report_line "\`\`\`"
-  cat "$TLS_TXT" >> "$REPORT_FILE" 2>/dev/null || true
+  append_block "$TLS_TXT"
   report_line "\`\`\`"
   report_line ""
 fi
@@ -622,7 +651,7 @@ if require nikto; then
   fi
 
   report_line "\`\`\`"
-  cat "$NIKTO_OUT" >> "$REPORT_FILE" 2>/dev/null || true
+  append_block "$NIKTO_OUT"
   report_line "\`\`\`"
   report_line ""
 fi
