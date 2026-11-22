@@ -54,6 +54,7 @@ only if truly under the target (V07), wildcard DNS flagged (V10), revoke stops s
 bulk and queue caps (V14), concurrency limit and one scan per asset (V15), no intrusive profile (V16), crash-safe state
 (V17), hard timeouts and cancel (V18), finding de-duplication and new/resolved diff (V19), risk score (V20), audit log
 (V21), CSV formula-injection guard (V22), hostile target input refused (V23), unreachable hosts report nothing (V24),
-hostile banners cannot inject terminal or Markdown (V25).
+hostile banners cannot inject terminal or Markdown (V25). Revoke and exclude hold even between queueing and launch,
+and a hostname that resolves to a never-scanned range is excluded and re-checked right before launch (V04, V11).
 
 Tests: `cd webui && venv/bin/pytest -q`. Only scan systems you are authorised to test.

@@ -98,3 +98,12 @@ def test_BRV16_no_intrusive_profile_exists():
     assert "sqlmap" not in config.PROFILES and "dalfox" not in config.PROFILES
     assert all("subfinder" in p["skip"] for p in config.PROFILES.values()), "discovery already ran in step 1"
     assert "ffuf" in skipped
+
+
+def test_BRV04_ipv4_mapped_ipv6_forms_cannot_smuggle_metadata_address():
+    for bad in ["::ffff:169.254.169.254", "[::ffff:169.254.169.254]", "::ffff:0.0.0.0", "fe80::1", "ff02::1"]:
+        assert rules.parse_one(bad).error, bad
+    assert rules.forbidden_ip("::ffff:169.254.169.254") and rules.forbidden_ip("not-an-ip")
+    assert not rules.forbidden_ip("93.184.216.34")
+    p = rules.parse_one("::ffff:10.0.0.5")
+    assert p.value == "10.0.0.5" and p.warning

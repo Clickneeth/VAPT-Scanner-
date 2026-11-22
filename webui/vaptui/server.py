@@ -233,6 +233,9 @@ def exclude(aid: int, request: Request):
         _bad("unknown asset", 404)
     new = 0 if a["excluded"] else 1
     db.run("UPDATE assets SET excluded=? WHERE id=?", (new, aid))
+    if new:                                                  # BR-V11: excluding an asset stops its pending work too
+        for sc in db.q("SELECT id FROM scans WHERE asset_id=? AND status IN ('queued','running')", (aid,)):
+            runner.cancel(sc["id"])
     db.audit("asset_excluded" if new else "asset_included", a["host"])
     return {"excluded": bool(new)}
 

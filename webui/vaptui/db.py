@@ -82,6 +82,12 @@ def run(sql: str, args: tuple = ()) -> int:
         return c.execute(sql, args).lastrowid or 0
 
 
+def execute(sql: str, args: tuple = ()) -> int:
+    """Like run() but returns the affected row count: lets callers make conditional, atomic state changes."""
+    with conn() as c:
+        return c.execute(sql, args).rowcount
+
+
 def audit(action: str, detail: str) -> None:
     """BR-V21: every state-changing action leaves a trail."""
     run("INSERT INTO audit(ts, action, detail) VALUES (?,?,?)", (rules.now(), action, detail[:500]))

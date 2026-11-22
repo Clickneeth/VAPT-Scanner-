@@ -283,3 +283,82 @@ def test_BRV24_exit_code_3_is_reported_as_no_web_response(client, monkeypatch, t
     row = db.one("SELECT error FROM scans WHERE id=?", (sid,))
     assert "No web response" in row["error"]
     assert db.one("SELECT COUNT(*) c FROM findings WHERE scan_id=?", (sid,))["c"] == 0
+
+
+# ---- security review round: revoke/exclude must hold at start time, discovery revoke sticks, DNS re-check ----
+
+def test_BRV11_excluding_an_asset_cancels_its_queued_scan(client):
+    tid = add_target(client)["added"][0]["id"]
+    a = add_asset_row(tid)
+    sid = client.post("/api/scans", json={"asset_ids": [a], "profile": "quick"}).json()["queued"][0]
+    client.post(f"/api/assets/{a}/exclude")
+    assert db.one("SELECT status FROM scans WHERE id=?", (sid,))["status"] == "cancelled"
+
+
+def test_BRV11_tick_never_starts_a_scan_for_an_excluded_or_revoked_asset(client, monkeypatch, tmp_path):
+    run_fake(monkeypatch, tmp_path, "#!/usr/bin/env bash\ntouch started.flag\nsleep 5\n")
+    tid = add_target(client)["added"][0]["id"]
+    a1, a2 = add_asset_row(tid, "x1.example.com"), add_asset_row(tid, "x2.example.com")
+    s1 = client.post("/api/scans", json={"asset_ids": [a1], "profile": "quick"}).json()["queued"][0]
+    s2 = client.post("/api/scans", json={"asset_ids": [a2], "profile": "quick"}).json()["queued"][0]
+    db.run("UPDATE assets SET excluded=1 WHERE id=?", (a1,))                   # lands after queueing, before start
+    db.run("UPDATE targets SET status='revoked' WHERE id=?", (tid,))
+    runner._tick()
+    time.sleep(0.4)
+    for sid in (s1, s2):
+        row = db.one("SELECT status, error FROM scans WHERE id=?", (sid,))
+        assert row["status"] == "cancelled" and "revoked" in row["error"]
+    assert not list(config.SCANS_DIR.glob("*/started.flag")), "no scanner process may have been launched"
+
+
+def test_BRV11_supervisor_rechecks_authorisation_before_launch(client, monkeypatch, tmp_path):
+    """The window between the conditional UPDATE and Popen: revoke lands there, the process must not start."""
+    run_fake(monkeypatch, tmp_path, "#!/usr/bin/env bash\ntouch started.flag\nsleep 5\n")
+    tid = add_target(client)["added"][0]["id"]
+    a = add_asset_row(tid)
+    sid = client.post("/api/scans", json={"asset_ids": [a], "profile": "quick"}).json()["queued"][0]
+    db.run("UPDATE scans SET status='running', started_at=? WHERE id=?", (rules.now(), sid))   # as _tick would
+    db.run("UPDATE targets SET status='revoked' WHERE id=?", (tid,))                           # the race
+    runner._supervise(sid)
+    assert db.one("SELECT status FROM scans WHERE id=?", (sid,))["status"] == "cancelled"
+    assert not list(config.SCANS_DIR.glob("*/started.flag"))
+
+
+def test_BRV04_forbidden_resolution_blocks_launch(client, monkeypatch, tmp_path):
+    run_fake(monkeypatch, tmp_path, "#!/usr/bin/env bash\ntouch started.flag\n")
+    monkeypatch.setattr(runner.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("169.254.169.254", 0))])
+    tid = add_target(client)["added"][0]["id"]
+    a = add_asset_row(tid, "rebind.example.com")
+    sid = client.post("/api/scans", json={"asset_ids": [a], "profile": "quick"}).json()["queued"][0]
+    runner._tick()
+    assert wait_status(sid, {"failed"}) == "failed"
+    assert "never scanned" in db.one("SELECT error FROM scans WHERE id=?", (sid,))["error"]
+    assert not list(config.SCANS_DIR.glob("*/started.flag"))
+
+
+def test_BRV24_discovery_revoked_midway_is_not_overwritten(client, monkeypatch):
+    from vaptui import discovery
+    monkeypatch.undo()                                                           # use the real discovery.start/discover
+    tid = db.run("INSERT INTO targets(kind,value,basis,authorised_at,created_at) VALUES ('domain','example.com','b',?,?)",
+                 (rules.now(), rules.now()))
+
+    def revoke_while_enumerating(domain):
+        db.run("UPDATE targets SET status='revoked' WHERE id=?", (tid,))
+        return ["a.example.com"]
+
+    monkeypatch.setattr(discovery, "_subfinder", revoke_while_enumerating)
+    monkeypatch.setattr(discovery, "_is_wildcard", lambda d: False)
+    monkeypatch.setattr(discovery, "_resolve", lambda h: ["93.184.216.34"])
+    monkeypatch.setattr(discovery, "_probe", lambda hs: (_ for _ in ()).throw(AssertionError("probed after revoke")))
+    discovery.discover(tid)
+    assert db.one("SELECT status FROM targets WHERE id=?", (tid,))["status"] == "revoked"
+    assert not db.q("SELECT * FROM assets WHERE target_id=?", (tid,)), "no assets written after revoke"
+
+
+def test_BRV04_discovered_host_resolving_to_metadata_range_is_excluded(client, monkeypatch):
+    from vaptui import discovery
+    tid = db.run("INSERT INTO targets(kind,value,basis,authorised_at,created_at,status) VALUES ('domain','example.com','b',?,?,'discovering')",
+                 (rules.now(), rules.now()))
+    discovery._upsert_asset(tid, "meta.example.com", "subdomain", "discovery", ["169.254.169.254", "93.184.216.34"], False)
+    row = db.one("SELECT * FROM assets WHERE host='meta.example.com'")
+    assert row["excluded"] == 1 and json.loads(row["ips"]) == ["93.184.216.34"] and "forbidden" in row["note"]

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -102,6 +103,19 @@ def cancel(scan_id: int) -> bool:
     return False
 
 
+def _forbidden_resolution(host: str) -> str:
+    """First resolved address of `host` that falls in a never-scanned class, else ''. IP literals are checked too."""
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return ""                                          # unresolvable: the scanner's own gate reports it
+    for info in infos:
+        addr = info[4][0]
+        if rules.forbidden_ip(addr):
+            return addr
+    return ""
+
+
 def _kill(p: subprocess.Popen) -> None:
     try:
         os.killpg(p.pid, signal.SIGTERM)
@@ -159,13 +173,24 @@ def _supervise(scan_id: int) -> None:
     prof = config.PROFILES[s["profile"]]
     try:
         arg = scan_target_arg(s)
+        bad = _forbidden_resolution(s["host"])             # BR-V04: re-check DNS now (rebinding since discovery)
+        if bad:
+            raise ValueError(f"{s['host']} now resolves to {bad}, an address class that is never scanned")
         env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "LC_ALL", "USER", "TMPDIR")}
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + env.get("PATH", "/usr/bin:/bin")
         env.update(TERM="xterm", VAPT_SKIP_TOOLS=",".join(prof["skip"]), VAPT_FINDINGS_FILE=str(d / "findings.tsv"))
         with open(log, "wb") as lf:
-            p = subprocess.Popen(["bash", str(config.SCANNER)], cwd=d, env=env, stdin=subprocess.PIPE, stdout=lf,
-                                 stderr=subprocess.STDOUT, start_new_session=True)
             with _lock:
+                # last check, in the same critical section that registers the process: a cancel, revoke or
+                # exclusion that arrived while this thread was starting wins (cancel() takes the same lock)
+                still_ok = db.one("SELECT 1 x FROM assets a JOIN targets t ON t.id=a.target_id "
+                                  "WHERE a.id=? AND a.excluded=0 AND t.status<>'revoked'", (s["aid"],))
+                if scan_id in _cancel or not still_ok:
+                    _cancel.discard(scan_id)
+                    _finish(scan_id, s["aid"], "cancelled", "cancelled before start (revoked, excluded or stopped)", d)
+                    return
+                p = subprocess.Popen(["bash", str(config.SCANNER)], cwd=d, env=env, stdin=subprocess.PIPE, stdout=lf,
+                                     stderr=subprocess.STDOUT, start_new_session=True)
                 _procs[scan_id] = p
             assert p.stdin is not None
             p.stdin.write(f"{arg}\ny\n".encode())          # target, then the authorisation confirmation
@@ -205,23 +230,27 @@ def _supervise(scan_id: int) -> None:
             _procs.pop(scan_id, None)
 
 
+_START_OK = ("UPDATE scans SET status='running', started_at=?, module=0 WHERE id=? AND status='queued' "
+             "AND asset_id IN (SELECT a.id FROM assets a JOIN targets t ON t.id=a.target_id "
+             "WHERE t.status<>'revoked' AND a.excluded=0)")
+
+
 def _tick() -> None:
     running = db.one("SELECT COUNT(*) c FROM scans WHERE status='running'")["c"]
     free = config.MAX_CONCURRENT_SCANS - running
     if free <= 0:
         return
-    for s in db.q("SELECT id, asset_id FROM scans WHERE status='queued' ORDER BY id LIMIT 20"):
+    for s in db.q("SELECT id FROM scans WHERE status='queued' ORDER BY id LIMIT 20"):
         if free <= 0:
             break
-        # BR-V15: never two scans on the same asset, and the target must still be authorised
-        t = db.one("SELECT t.status FROM assets a JOIN targets t ON t.id=a.target_id WHERE a.id=?", (s["asset_id"],))
-        if t and t["status"] == "revoked":
-            db.run("UPDATE scans SET status='cancelled', error='authorisation revoked', finished_at=? WHERE id=?",
-                   (rules.now(), s["id"]))
-            continue
-        db.run("UPDATE scans SET status='running', started_at=?, module=0 WHERE id=?", (rules.now(), s["id"]))
-        threading.Thread(target=_supervise, args=(s["id"],), daemon=True, name=f"scan-{s['id']}").start()
-        free -= 1
+        # BR-V11/V15: the move queued -> running is one conditional statement, so a revoke or an exclusion that
+        # lands between queueing and starting can never be raced past. Only a row we actually changed starts.
+        if db.execute(_START_OK, (rules.now(), s["id"])) == 1:
+            threading.Thread(target=_supervise, args=(s["id"],), daemon=True, name=f"scan-{s['id']}").start()
+            free -= 1
+        else:
+            db.execute("UPDATE scans SET status='cancelled', error='asset excluded or authorisation revoked', "
+                       "finished_at=? WHERE id=? AND status='queued'", (rules.now(), s["id"]))
 
 
 def _loop() -> None:

@@ -39,6 +39,18 @@ def clean_host(raw: str) -> str:
     return s.strip(".")
 
 
+def forbidden_ip(addr: str) -> bool:
+    """BR-V04: unspecified, multicast, link-local (cloud metadata), reserved. Also catches ::ffff:a.b.c.d forms."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    return ip.is_unspecified or ip.is_multicast or ip.is_link_local or ip.is_reserved
+
+
 def parse_one(raw: str) -> Parsed:
     p = Parsed(raw=raw)
     host = clean_host(raw)
@@ -51,11 +63,12 @@ def parse_one(raw: str) -> Parsed:
         ip = None
     if ip is not None:
         # BR-V04: addresses that are never a legitimate scan target
-        if ip.is_unspecified or ip.is_multicast or ip.is_link_local or ip.is_reserved:
+        if forbidden_ip(str(ip)):
             p.error = "address class is never scanned (unspecified, multicast, link-local such as cloud metadata, reserved)"
             return p
-        p.kind, p.value = "ip", str(ip)
-        if ip.is_private or ip.is_loopback:
+        mapped = getattr(ip, "ipv4_mapped", None)
+        p.kind, p.value = "ip", str(mapped or ip)
+        if (mapped or ip).is_private or (mapped or ip).is_loopback:
             p.warning = "private/loopback address: only your own lab or an authorised internal network"
         return p
     if len(host) > 253 or not DOMAIN_RE.match(host):
