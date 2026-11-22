@@ -47,10 +47,13 @@ A local, loopback-only UI around `vapt_scanner.sh`: drop targets, map every subd
 webui/run.sh          # first run creates webui/venv; it prints (and opens) a launch link with a per-launch key
 ```
 
-1. **Scope**: paste or drop domains and IPs, tick the authorisation box and state your basis (stored in the audit log).
-   Domains are mapped passively (subfinder, DNS, httpx liveness). Nothing is scanned yet.
-2. **Assets**: every discovered host with IPs, status, title and tech. Scan one, a selection, or all live hosts with a
-   Quick / Standard / Deep profile. Add extra IPs or hosts (each needs its own attestation).
+**Scan (home page):** type a domain or IP, tick the authorisation box, press Scan. It maps the subdomains, probes which
+are alive, scans every live host automatically (Quick, Standard or Deep) and shows progress and results on the same page.
+
+For control, use the manual pages:
+1. **Manual setup**: paste or drop several targets with a written basis. Nothing is scanned until you choose.
+2. **Assets**: every discovered host with IPs, status, title and tech. Scan one, a selection, or all live hosts. Add extra
+   IPs or hosts (each needs its own attestation).
 3. **Scans**: live progress, log, findings and what changed since the previous scan of that asset.
 4. **Findings**: latest result per asset, filter by severity, export CSV or JSON.
 
@@ -60,7 +63,8 @@ only if truly under the target (V07), wildcard DNS flagged (V10), revoke stops s
 bulk and queue caps (V14), concurrency limit and one scan per asset (V15), no intrusive profile (V16), crash-safe state
 (V17), hard timeouts and cancel (V18), finding de-duplication and new/resolved diff (V19), risk score (V20), audit log
 (V21), CSV formula-injection guard (V22), hostile target input refused (V23), unreachable hosts report nothing (V24),
-hostile banners cannot inject terminal or Markdown (V25). Revoke and exclude hold even between queueing and launch,
+hostile banners cannot inject terminal or Markdown (V25), Quick Scan needs the authorisation tick and only auto-scans live,
+real, non-excluded hosts (V27, V28). Revoke and exclude hold even between queueing and launch,
 and a hostname that resolves to a never-scanned range is excluded and re-checked right before launch (V04, V11).
 
 Every launch prints a one-time link. The browser is opened on a private local file (never a command-line argument), the

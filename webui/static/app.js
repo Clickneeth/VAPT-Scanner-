@@ -20,6 +20,7 @@ function h(tag, props, ...kids) {
 }
 const svg = (d) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round'); s.setAttribute('aria-hidden', 'true'); const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', d); s.append(p); return s; };
 const ICON = {
+  home: 'M12 3l9 8-1.5 1.7-1.5-1.3V20H6v-8.6l-1.5 1.3L3 11zM10 20v-5h4v5',
   scope: 'M12 3l8 3v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6zM9 12l2 2 4-4',
   assets: 'M3 6h18M3 12h18M3 18h18M7 3v18',
   scans: 'M4 12a8 8 0 1 0 8-8M4 4v5h5M12 8v4l3 2',
@@ -31,7 +32,7 @@ const SEVC = { CRITICAL: 'var(--crit)', HIGH: 'var(--high)', MEDIUM: 'var(--med)
 
 const S = {
   meta: null, targets: [], assets: [], scans: [], findings: [], audit: [],
-  view: 'scope', sel: new Set(), profile: 'standard',
+  view: 'home', sel: new Set(), profile: 'standard',
   af: { q: '', mode: 'all', target: 'all' }, ff: { q: '', sev: null, host: 'all' }, scanFilter: 'active',
   openScan: null, scanDetail: null, logOffset: 0, logText: '', tab: 'log', sig: '',
 };
@@ -100,13 +101,95 @@ const total = (c) => Object.values(c || {}).reduce((a, b) => a + b, 0);
 
 /* ---------- views ---------- */
 const VIEWS = {
-  scope: { title: 'Scope', sub: 'Drop targets, confirm you are authorised, and we map every subdomain first.' },
+  home: { title: 'Scan', sub: 'Enter a target. We map its subdomains, then scan every live host.' },
+  scope: { title: 'Manual setup', sub: 'Advanced: drop targets, map subdomains first, then choose exactly what to scan.' },
   assets: { title: 'Assets', sub: 'Pick what to test: single hosts, a selection, or everything that is alive.' },
   scans: { title: 'Scans', sub: 'Live progress, logs and results for every run.' },
   findings: { title: 'Findings', sub: 'Latest result for every asset, with what changed since the previous scan.' },
   audit: { title: 'Audit log', sub: 'Every authorisation and scan action, newest first.' },
 };
 let ctx = {};   // refs of the mounted view
+
+
+/* ----- HOME: enter a target, scanning starts ----- */
+function jobInfo(t) {
+  const assets = S.assets.filter((a) => a.target_id === t.id), ids = new Set(assets.map((a) => a.id));
+  const live = assets.filter((a) => a.alive && !a.excluded && !a.wildcard);
+  const scans = S.scans.filter((s) => ids.has(s.asset_id));
+  const active = scans.filter((s) => s.status === 'queued' || s.status === 'running');
+  const fin = scans.filter((s) => !(s.status === 'queued' || s.status === 'running'));
+  const counts = {}; assets.forEach((a) => Object.entries(a.last_counts || {}).forEach(([k, v]) => { counts[k] = (counts[k] || 0) + v; }));
+  const part = active.reduce((n, s) => n + (s.status === 'running' ? s.module / 10 : 0), 0);
+  return { assets, live, scans, active, fin, counts, pct: scans.length ? Math.round(((fin.length + part) / scans.length) * 100) : 0 };
+}
+function jobStage(t, j) {
+  if (t.status === 'discovering' || t.status === 'new') return { key: 'discovering', label: 'Step 1 of 2: mapping subdomains and finding live hosts', ind: true };
+  if (t.status === 'failed') return { key: 'failed', label: t.error || 'Discovery failed', ind: false };
+  if (t.status === 'revoked') return { key: 'revoked', label: 'Stopped: authorisation revoked', ind: false };
+  if (!j.scans.length) return j.live.length ? { key: 'queued', label: 'Starting scans…', ind: true } : { key: 'done', label: 'Mapped ' + j.assets.length + ' host' + (j.assets.length === 1 ? '' : 's') + ', but none answered on the web, so nothing was scanned.', ind: false };
+  if (j.active.length) { const run = j.active.find((s) => s.status === 'running'); return { key: 'running', label: `Step 2 of 2: scanned ${j.fin.length} of ${j.scans.length} hosts` + (run ? ` · now ${run.host}, module ${run.module}/10` : ''), ind: false }; }
+  return { key: 'done', label: `Finished: ${j.scans.length} host${j.scans.length === 1 ? '' : 's'} scanned`, ind: false };
+}
+function mountHome(root) {
+  const input = h('input', { type: 'text', class: 'bigin', id: 'qs-target', placeholder: 'example.com  or  203.0.113.7', autocomplete: 'off', spellcheck: false, 'aria-label': 'Target domain or IP address' });
+  const att = h('input', { type: 'checkbox', id: 'qs-att' });
+  const go1 = h('button', { class: 'btn primary big', type: 'button', disabled: true }, 'Scan');
+  const note = h('p', { class: 'err', role: 'alert' });
+  const profBox = h('div', {});
+  const sync = () => { go1.disabled = !(att.checked && input.value.trim()); };
+  const renderProf = () => profBox.replaceChildren(h('div', { class: 'row' }, profileSeg(renderProf), h('span', { class: 'hint' }, S.meta ? S.meta.profiles[S.profile].blurb : '')));
+  S.profile = S.profile === 'standard' ? 'quick' : S.profile; renderProf();
+  input.addEventListener('input', sync); att.addEventListener('change', sync);
+  const submit = async () => {
+    if (go1.disabled) return;
+    go1.disabled = true; note.textContent = '';
+    try {
+      const r = await api('/api/quickscan', { method: 'POST', body: { text: input.value, attested: att.checked, profile: S.profile } });
+      if (r.started.length) { toast('Started: ' + r.started.map((x) => x.value).join(', '), 'ok'); input.value = ''; }
+      if (r.duplicates.length) toast(r.duplicates.join(', ') + ' is already tracked. See it below, or use Assets to scan it again.');
+      if (r.rejected.length) note.textContent = r.rejected.map((x) => x.raw + ': ' + x.error).join(' · ');
+      await refresh(true);
+    } catch (e) { note.textContent = e.message; }
+    sync();
+  };
+  go1.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  const jobs = h('div', { class: 'jobs' });
+  root.append(
+    h('div', { class: 'hero card' },
+      h('div', { class: 'hero-copy' }, h('h2', {}, 'What do you want to scan?'), h('p', { class: 'muted' }, 'Type a domain or an IP address and press Scan. We find its subdomains first, then test every live host.')),
+      h('div', { class: 'hero-row' }, input, go1),
+      note,
+      h('label', { class: 'check', for: 'qs-att' }, att, h('span', {}, 'I own this target or have written permission to test it, including every subdomain found under it.')),
+      profBox,
+      h('ol', { class: 'steps' }, h('li', {}, h('b', {}, '1'), ' Map subdomains'), h('li', {}, h('b', {}, '2'), ' Probe which are alive'), h('li', {}, h('b', {}, '3'), ' Scan every live host'), h('li', {}, h('b', {}, '4'), ' Read the results')),
+      h('p', { class: 'hint' }, 'Want to pick hosts yourself, or add extra IPs? Use ', h('button', { class: 'iplink', type: 'button', onclick: () => go('scope') }, 'manual setup'), '.')),
+    h('h3', {}, 'Your scans'), jobs);
+  ctx = { jobs, input };
+  updateHome();
+}
+function updateHome() {
+  const { jobs } = ctx;
+  if (!jobs) return;
+  const ts = S.targets.filter((t) => t.auto_scan);
+  if (!ts.length) { jobs.replaceChildren(h('div', { class: 'card empty' }, h('h2', {}, 'Nothing scanned yet'), h('p', {}, 'Enter a target above and your scan appears here.'))); return; }
+  jobs.replaceChildren(...ts.map((t) => {
+    const j = jobInfo(t), st = jobStage(t, j);
+    const fill = h('span'); fill.style.width = (st.key === 'done' ? 100 : st.key === 'discovering' ? 40 : j.pct) + '%';
+    const running = j.active.length > 0 || t.status === 'discovering';
+    return h('article', { class: 'card job' },
+      h('div', { class: 'row spread' }, h('span', { class: 'val' }, t.value), pill(st.key === 'done' ? 'done' : st.key === 'failed' || st.key === 'revoked' ? 'failed' : 'running', st.key === 'done' ? 'finished' : st.key === 'failed' ? 'failed' : st.key === 'revoked' ? 'stopped' : 'scanning')),
+      h('span', { class: 'bar ' + (st.ind ? 'indeterminate' : st.key === 'done' ? riskClass(Math.max(0, ...Object.entries(j.counts).map(([k, v]) => v * ({ CRITICAL: 10, HIGH: 5, MEDIUM: 2, LOW: 1 }[k] || 0)))) : '') }, fill),
+      h('p', { class: 'muted' }, st.label),
+      st.key === 'done' || j.fin.length ? h('div', { class: 'row' }, countsRow(j.counts), j.live.length ? h('span', { class: 'hint' }, j.live.length + ' live host' + (j.live.length === 1 ? '' : 's') + ' · ' + j.assets.length + ' found') : null) : null,
+      t.warning ? h('p', { class: 'warn' }, t.warning) : null,
+      h('div', { class: 'row' },
+        j.scans.length ? h('button', { class: 'btn small primary', type: 'button', onclick: () => { const r = j.active[0] || j.scans[0]; S.openScan = r.id; S.scanDetail = null; S.logOffset = 0; S.logText = ''; go('scans'); } }, running ? 'Watch live' : 'Open log') : null,
+        j.fin.length ? h('button', { class: 'btn small', type: 'button', onclick: () => { S.ff.q = t.value; S.ff.sev = null; S.ff.host = 'all'; go('findings'); } }, 'See results') : null,
+        j.live.length > 0 || t.status === 'ready' ? h('button', { class: 'btn small ghost', type: 'button', onclick: () => { S.af.target = String(t.id); go('assets'); } }, 'Hosts (' + j.assets.length + ')') : null,
+        running ? h('button', { class: 'btn small danger', type: 'button', onclick: async () => { for (const s of j.active) { try { await api('/api/scans/' + s.id + '/cancel', { method: 'POST' }); } catch (e) { /* already finished */ } } if (t.status === 'discovering') { await api('/api/targets/' + t.id + '/revoke', { method: 'POST' }).catch(() => {}); } toast('Stopped ' + t.value, 'ok'); refresh(true); } }, 'Stop') : null));
+  }));
+}
 
 /* ----- SCOPE ----- */
 function mountScope(root) {
@@ -449,10 +532,10 @@ function updateAudit() {
 }
 
 /* ---------- shell ---------- */
-const MOUNT = { scope: mountScope, assets: mountAssets, scans: mountScans, findings: mountFindings, audit: mountAudit };
-const UPDATE = { scope: updateScope, assets: updateAssets, scans: updateScans, findings: updateFindings, audit: updateAudit };
+const MOUNT = { home: mountHome, scope: mountScope, assets: mountAssets, scans: mountScans, findings: mountFindings, audit: mountAudit };
+const UPDATE = { home: updateHome, scope: updateScope, assets: updateAssets, scans: updateScans, findings: updateFindings, audit: updateAudit };
 function renderNav() {
-  const counts = { scope: S.targets.length, assets: S.assets.length, scans: S.scans.filter((s) => s.status === 'running' || s.status === 'queued').length, findings: S.findings.length, audit: '' };
+  const counts = { home: S.targets.filter((t) => t.auto_scan && (t.status === 'discovering' || S.scans.some((x) => (x.status === 'running' || x.status === 'queued') && S.assets.some((a) => a.id === x.asset_id && a.target_id === t.id)))).length, scope: S.targets.length, assets: S.assets.length, scans: S.scans.filter((s) => s.status === 'running' || s.status === 'queued').length, findings: S.findings.length, audit: '' };
   $('#nav').replaceChildren(...Object.keys(VIEWS).map((k) => h('button', { type: 'button', 'aria-current': S.view === k ? 'page' : null, onclick: () => go(k) }, svg(ICON[k]), VIEWS[k].title, counts[k] !== '' && counts[k] !== 0 ? h('span', { class: 'n' }, counts[k]) : null)));
   const run = S.scans.filter((s) => s.status === 'running').length, q = S.scans.filter((s) => s.status === 'queued').length, disc = S.targets.filter((t) => t.status === 'discovering').length;
   const live = $('#live'); live.classList.toggle('on', run + q + disc > 0);
@@ -499,7 +582,7 @@ function initTheme() {
   const st = await api('/api/state').catch(() => ({ targets: [], assets: [], scans: [] }));
   S.targets = st.targets; S.assets = st.assets; S.scans = st.scans;
   const v = location.hash.slice(1);
-  go(VIEWS[v] ? v : (S.targets.length ? 'assets' : 'scope'));
+  go(VIEWS[v] ? v : 'home');
   addEventListener('hashchange', () => { const x = location.hash.slice(1); if (VIEWS[x] && x !== S.view) go(x); });
   setTimeout(loop, nextDelay());
 })();

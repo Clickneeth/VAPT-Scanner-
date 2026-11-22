@@ -464,3 +464,88 @@ def test_BRV04_manual_host_resolving_to_forbidden_range_is_excluded_not_probed(c
 def test_BRV04_probe_never_follows_redirects():
     src = (Path(__file__).resolve().parents[1] / "vaptui" / "discovery.py").read_text()
     assert "-follow-redirects" not in src
+
+
+# ---- Quick Scan: enter a target, scanning starts ----
+
+def _quick(client, text="example.com", attested=True, profile="quick"):
+    return client.post("/api/quickscan", json={"text": text, "attested": attested, "profile": profile})
+
+
+def test_BRV27_quickscan_needs_the_tick_and_validates(client):
+    assert _quick(client, attested=False).status_code == 400
+    assert _quick(client, profile="nope").status_code == 400
+    assert _quick(client, text="  ").status_code == 400
+    r = _quick(client, "example.com 169.254.169.254 bad_one").json()
+    assert [t["value"] for t in r["started"]] == ["example.com"] and len(r["rejected"]) == 2
+    t = db.one("SELECT auto_scan, basis FROM targets WHERE value='example.com'")
+    assert t["auto_scan"] == "quick" and "Self-attested" in t["basis"]
+    log = client.get("/api/audit").json()["audit"]
+    assert any("quick scan" in a["detail"] for a in log)
+    assert _quick(client, "example.com").json()["duplicates"] == ["example.com"]
+
+
+def test_BRV27_quickscan_refuses_a_revoked_target(client):
+    tid = _quick(client).json()["started"][0]["id"]
+    client.post(f"/api/targets/{tid}/revoke")
+    r = _quick(client).json()
+    assert not r["started"] and "revoked" in r["rejected"][0]["error"]
+
+
+def test_BRV28_auto_scan_picks_only_live_in_scope_real_hosts():
+    rows = [dict(id=1, kind="root", host="a.com", alive=1, excluded=0, wildcard=0),
+            dict(id=2, kind="subdomain", host="z.a.com", alive=1, excluded=0, wildcard=0),
+            dict(id=3, kind="subdomain", host="b.a.com", alive=1, excluded=0, wildcard=0),
+            dict(id=4, kind="subdomain", host="dead.a.com", alive=0, excluded=0, wildcard=0),
+            dict(id=5, kind="subdomain", host="ex.a.com", alive=1, excluded=1, wildcard=0),
+            dict(id=6, kind="subdomain", host="wild.a.com", alive=1, excluded=0, wildcard=1)]
+    assert rules.auto_scan_asset_ids(rows) == [1, 3, 2]
+
+
+def test_BRV28_auto_scan_cap():
+    rows = [dict(id=i, kind="subdomain", host=f"h{i:04d}.a.com", alive=1, excluded=0, wildcard=0) for i in range(config.MAX_BULK_SCAN + 30)]
+    assert len(rules.auto_scan_asset_ids(rows)) == config.MAX_BULK_SCAN
+
+
+def test_BRV28_discovery_finishing_queues_scans_for_live_hosts_only(client, monkeypatch):
+    from vaptui import discovery
+    monkeypatch.undo()                                                          # real discover(), stubbed tools
+    monkeypatch.setattr(runner.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))])
+    monkeypatch.setattr(discovery, "_subfinder", lambda d: ["www.example.com", "dead.example.com"])
+    monkeypatch.setattr(discovery, "_is_wildcard", lambda d: False)
+    monkeypatch.setattr(discovery, "_resolve", lambda h: ["93.184.216.34"])
+    probe = lambda hs: {h: {"url": f"https://{h}", "status_code": 200, "host_ip": "93.184.216.34"} for h in hs if h != "dead.example.com"}  # noqa: E731
+    monkeypatch.setattr(discovery, "_probe", probe)
+    tid = db.run("INSERT INTO targets(kind,value,basis,authorised_at,created_at,auto_scan) VALUES ('domain','example.com','b',?,?,'standard')", (rules.now(), rules.now()))
+    discovery.discover(tid)
+    hosts = [r["host"] for r in db.q("SELECT a.host FROM scans s JOIN assets a ON a.id=s.asset_id WHERE s.status='queued' ORDER BY s.id")]
+    assert hosts == ["example.com", "www.example.com"], "root first, dead host skipped"
+    assert {r["profile"] for r in db.q("SELECT profile FROM scans")} == {"standard"}
+
+
+def test_BRV28_manual_targets_are_never_auto_scanned(client, monkeypatch):
+    from vaptui import discovery
+    monkeypatch.undo()
+    monkeypatch.setattr(discovery, "_subfinder", lambda d: [])
+    monkeypatch.setattr(discovery, "_is_wildcard", lambda d: False)
+    monkeypatch.setattr(discovery, "_resolve", lambda h: ["93.184.216.34"])
+    monkeypatch.setattr(discovery, "_probe", lambda hs: {h: {"url": f"https://{h}", "status_code": 200} for h in hs})
+    tid = db.run("INSERT INTO targets(kind,value,basis,authorised_at,created_at) VALUES ('domain','example.com','b',?,?)", (rules.now(), rules.now()))
+    discovery.discover(tid)
+    assert db.q("SELECT * FROM scans") == []
+
+
+def test_BRV28_revoked_before_discovery_ends_means_no_scans(client, monkeypatch):
+    from vaptui import discovery
+    monkeypatch.undo()
+    def revoke_midway(domain):
+        db.run("UPDATE targets SET status='revoked' WHERE id=1")
+        return ["a.example.com"]
+    monkeypatch.setattr(discovery, "_subfinder", revoke_midway)
+    monkeypatch.setattr(discovery, "_is_wildcard", lambda d: False)
+    monkeypatch.setattr(discovery, "_resolve", lambda h: ["93.184.216.34"])
+    monkeypatch.setattr(discovery, "_probe", lambda hs: {h: {"url": f"https://{h}", "status_code": 200} for h in hs})
+    tid = db.run("INSERT INTO targets(kind,value,basis,authorised_at,created_at,auto_scan) VALUES ('domain','example.com','b',?,?,'quick')", (rules.now(), rules.now()))
+    assert tid == 1
+    discovery.discover(tid)
+    assert db.q("SELECT * FROM scans") == []

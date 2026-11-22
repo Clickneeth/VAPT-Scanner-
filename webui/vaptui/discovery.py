@@ -114,6 +114,24 @@ def _apply_probe(target_id: int, host: str, j: dict | None) -> None:
     )
 
 
+def _auto_scan(target_id: int) -> None:
+    """Quick Scan: when discovery finishes cleanly, queue scans for the live hosts. Goes through runner.enqueue, so
+    revoke, exclusion, cooldown and queue caps all still apply."""
+    from . import runner
+    t = db.one("SELECT * FROM targets WHERE id=?", (target_id,))
+    if not t or not t["auto_scan"] or t["status"] != "ready":
+        return
+    rows = db.q("SELECT id, kind, host, alive, excluded, wildcard FROM assets WHERE target_id=?", (target_id,))
+    ids = rules.auto_scan_asset_ids(rows)
+    if not ids:
+        db.audit("auto_scan_none", f"{t['value']}: no live web host to scan")
+        return
+    try:
+        runner.enqueue(ids, t["auto_scan"], False)
+    except ValueError as exc:
+        db.audit("auto_scan_failed", f"{t['value']}: {exc}")
+
+
 def discover(target_id: int) -> None:
     t = db.one("SELECT * FROM targets WHERE id=?", (target_id,))
     if not t or t["status"] == "revoked":
@@ -158,6 +176,7 @@ def discover(target_id: int) -> None:
                    (rules.now(), target_id))
         n = db.one("SELECT COUNT(*) c FROM assets WHERE target_id=?", (target_id,))["c"]
         db.audit("discovery_done", f"{t['value']}: {n} assets")
+        _auto_scan(target_id)
     except Exception as exc:  # noqa: BLE001 - a failed discovery must never crash the server
         db.execute("UPDATE targets SET status='failed', error=? WHERE id=? AND status='discovering'",
                    (str(exc)[:300], target_id))

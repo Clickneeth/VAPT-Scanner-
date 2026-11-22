@@ -180,3 +180,19 @@ def risk_label(score: int) -> str:
 def normalise_severity(sev: str) -> str:
     s = (sev or "").upper().strip()
     return s if s in config.SEVERITIES else "INFO"
+
+
+QUICK_BASIS = "Self-attested with the Quick Scan checkbox"
+
+
+def check_quick_attestation(attested: bool) -> str:
+    """BR-V27: Quick Scan needs one explicit tick. No tick, no target, no traffic."""
+    return "" if attested else "Tick the box to confirm you are authorised to test this target."
+
+
+def auto_scan_asset_ids(assets: list[dict]) -> list[int]:
+    """BR-V28: what Quick Scan sends to the scanner once discovery is done: live web hosts only, never excluded
+    ones, never wildcard-DNS lookalikes, capped at MAX_BULK_SCAN. The root domain comes first."""
+    ok = [a for a in assets if a["alive"] and not a["excluded"] and not a["wildcard"]]
+    ok.sort(key=lambda a: (0 if a["kind"] in ("root", "ip") else 1, a["host"]))
+    return [a["id"] for a in ok[: config.MAX_BULK_SCAN]]

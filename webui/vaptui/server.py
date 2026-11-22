@@ -184,6 +184,45 @@ def add_targets(body: TargetsIn):
     return {"added": added, "duplicates": duplicates, "rejected": rejected}
 
 
+class QuickIn(BaseModel):
+    text: str = Field(max_length=20000)
+    attested: bool = False
+    profile: str = "quick"
+
+
+@app.post("/api/quickscan")
+def quickscan(body: QuickIn):
+    """BR-V27/V28: enter a target, tick the box, scanning starts. Discovery runs first for domains, then every live
+    host is queued automatically. Same parsing, address rules, limits and audit trail as the manual flow."""
+    err = rules.check_quick_attestation(body.attested)
+    if err:
+        _bad(err)
+    if body.profile not in config.PROFILES:
+        _bad("unknown profile")
+    parsed = rules.parse_targets(body.text)
+    if not parsed:
+        _bad("Enter a domain or IP address.")
+    started, duplicates, rejected = [], [], []
+    for p in parsed:
+        if p.error:
+            rejected.append({"raw": p.raw[:100], "error": p.error})
+            continue
+        old = db.one("SELECT id, status FROM targets WHERE value=?", (p.value,))
+        if old:
+            if old["status"] == "revoked":
+                rejected.append({"raw": p.value, "error": "authorisation was revoked for this target; delete it first"})
+            else:
+                duplicates.append(p.value)
+            continue
+        tid = db.run("INSERT INTO targets(kind, value, basis, authorised_at, created_at, warning, auto_scan) "
+                     "VALUES (?,?,?,?,?,?,?)",
+                     (p.kind, p.value, rules.QUICK_BASIS, rules.now(), rules.now(), p.warning, body.profile))
+        db.audit("target_authorised", f"{p.value} ({p.kind}); basis: {rules.QUICK_BASIS}; quick scan, profile={body.profile}")
+        discovery.start(tid)
+        started.append({"id": tid, "value": p.value, "kind": p.kind, "warning": p.warning})
+    return {"started": started, "duplicates": duplicates, "rejected": rejected}
+
+
 @app.post("/api/targets/{tid}/discover")
 def rediscover(tid: int):
     t = db.one("SELECT * FROM targets WHERE id=?", (tid,))

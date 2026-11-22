@@ -231,3 +231,19 @@ td:nth-child(5) .row{flex-wrap:wrap;gap:6px}
   .sevcards{grid-template-columns:repeat(2,1fr)}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* home / quick scan */
+.hero{max-width:860px;padding:28px;display:flex;flex-direction:column;gap:16px;margin-bottom:26px;
+  background:radial-gradient(600px 200px at 20% -20%,color-mix(in srgb,var(--accent) 12%,transparent),transparent 70%),var(--panel)}
+.hero h2{font-size:24px;letter-spacing:-.02em}
+.hero-row{display:flex;gap:10px}
+.bigin{flex:1;font:500 18px var(--mono);padding:16px 18px;border-radius:12px}
+.btn.big{padding:0 30px;font-size:16px;border-radius:12px}
+.steps{display:flex;gap:10px;flex-wrap:wrap;list-style:none;margin:0;padding:0}
+.steps li{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px;padding:6px 12px;border:1px solid var(--line);border-radius:99px;background:var(--panel2)}
+.steps b{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font-size:11px}
+.jobs{display:flex;flex-direction:column;gap:14px;max-width:860px;margin-top:12px}
+.job{padding:18px;display:flex;flex-direction:column;gap:10px}
+.job .val{font:650 17px var(--mono);word-break:break-all}
+.job .bar{height:9px}
+@media (max-width:600px){.hero-row{flex-direction:column}.btn.big{padding:14px}}

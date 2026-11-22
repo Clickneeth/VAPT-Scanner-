@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS targets (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, value TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL DEFAULT 'new',          -- new | discovering | ready | failed | revoked
   basis TEXT NOT NULL, authorised_at TEXT NOT NULL, created_at TEXT NOT NULL,
-  discovered_at TEXT, error TEXT DEFAULT '', warning TEXT DEFAULT '');
+  discovered_at TEXT, error TEXT DEFAULT '', warning TEXT DEFAULT '',
+  auto_scan TEXT NOT NULL DEFAULT '');          -- profile to run automatically once discovery finishes ('' = manual)
 CREATE TABLE IF NOT EXISTS assets (
   id INTEGER PRIMARY KEY, target_id INTEGER NOT NULL REFERENCES targets(id),
   host TEXT NOT NULL, kind TEXT NOT NULL,       -- root | subdomain | ip | host
@@ -60,6 +61,9 @@ def conn() -> Iterator[sqlite3.Connection]:
 def init() -> None:
     with conn() as c:
         c.executescript(SCHEMA)
+        cols = {r[1] for r in c.execute("PRAGMA table_info(targets)")}
+        if "auto_scan" not in cols:                              # databases created before Quick Scan existed
+            c.execute("ALTER TABLE targets ADD COLUMN auto_scan TEXT NOT NULL DEFAULT ''")
         # a crash or restart must not leave phantom running scans (BR-V17)
         c.execute("UPDATE scans SET status='failed', error='server restarted while running', finished_at=? "
                   "WHERE status IN ('running')", (rules.now(),))
