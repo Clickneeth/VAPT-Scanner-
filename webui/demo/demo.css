@@ -1,0 +1,6 @@
+.demo-banner{position:sticky;top:0;z-index:70;display:flex;gap:14px;align-items:center;flex-wrap:wrap;justify-content:center;
+  min-height:44px;padding:8px 16px;background:var(--accent);color:var(--accent-ink);font:600 13px var(--sans)}
+.demo-banner code{background:rgba(0,0,0,.18);padding:3px 9px;border-radius:7px;font-size:12px;font-weight:500}
+.demo-banner a{color:inherit;text-decoration:underline}
+.rail{top:44px;height:calc(100vh - 44px)}
+@media (max-width:980px){.rail{top:auto;height:auto}.demo-banner code{display:none}}

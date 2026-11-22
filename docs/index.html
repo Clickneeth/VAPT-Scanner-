@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>VAPT Console: scan a target</title>
+<meta name="description" content="Enter a domain or IP. The console maps its subdomains, then scans every live host. Live demo with simulated data; the real scanner runs on your own machine.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0f17'/%3E%3Cpath d='M16 6l8 3v7c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V9z' fill='none' stroke='%2335e0b0' stroke-width='2.2' stroke-linejoin='round'/%3E%3Cpath d='M12.5 16l2.4 2.4 4.6-4.9' fill='none' stroke='%2335e0b0' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="demo.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+  <aside class="rail" aria-label="Primary">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><path d="M16 4l9 3.4v8.2c0 5.6-3.9 9.6-9 11.4-5.1-1.8-9-5.8-9-11.4V7.4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 15.6l3 3 5.4-5.8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><strong>VAPT Console</strong><span>live demo · simulated</span></div>
+    </div>
+    <nav id="nav" class="nav"></nav>
+    <div class="rail-foot">
+      <div id="tools" class="tools" aria-label="Installed tools"></div>
+      <button id="theme" class="btn ghost small" type="button" aria-label="Toggle light or dark theme">Theme</button>
+    </div>
+  </aside>
+  <main id="main" class="main" tabindex="-1">
+    <header class="topbar">
+      <div><h1 id="title">Scope</h1><p id="subtitle" class="muted"></p></div>
+      <div class="topbar-right"><span id="live" class="live" role="status"><i></i><span>Idle</span></span></div>
+    </header>
+    <section id="view"></section>
+  </main>
+</div>
+<div id="modal-root"></div>
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+<script src="demo.js"></script>
+<script src="app.js" defer></script>
+</body>
+</html>

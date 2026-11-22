@@ -1,5 +1,7 @@
 # VAPT Interactive Scanner
 
+**[Try the live demo](https://clickneeth.github.io/VAPT-Scanner-/)**: the console's front page with simulated data. The real scanner runs on your own machine (see below).
+
 An interactive bash-based VAPT L4 scanner implementing smart sequential scanning logic.
 
 ## Author
@@ -72,3 +74,8 @@ link works exactly once and is swapped for a separate HttpOnly same-site cookie,
 drive the console (V26). Lost the cookie? Restart `webui/run.sh` for a fresh link (also saved in `webui/data/`, mode 0600).
 
 Tests: `cd webui && venv/bin/pytest -q`. Only scan systems you are authorised to test.
+
+## Front page on GitHub Pages
+
+`docs/` is the same UI as `webui/static/` with an in-browser simulated backend (`webui/demo/demo.js`): it makes no network
+calls and scans nothing. Rebuild it after UI changes with `python3 scripts/build_pages.py`; a test fails if it is stale.
