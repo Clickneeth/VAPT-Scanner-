@@ -400,7 +400,7 @@ def test_BRV26_launch_code_is_single_use_and_cookie_is_a_different_value(client)
     ok = c.get("/?t=test-launch-code")
     assert ok.status_code == 303 and ok.headers["location"] == "/"
     cookie = ok.headers["set-cookie"]
-    assert "httponly" in cookie.lower() and "samesite=strict" in cookie.lower()
+    assert "httponly" in cookie.lower() and "samesite=lax" in cookie.lower()
     assert "test-launch-code" not in cookie and "test-session-token" in cookie, "cookie must not be the URL code"
     assert c.get("/api/meta").status_code == 200
     again = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", follow_redirects=False)
@@ -549,3 +549,14 @@ def test_BRV28_revoked_before_discovery_ends_means_no_scans(client, monkeypatch)
     assert tid == 1
     discovery.discover(tid)
     assert db.q("SELECT * FROM scans") == []
+
+
+def test_BRV26_lax_cookie_still_blocks_cross_site_writes(client):
+    """Lax cookies ride along on cross-site top-level GETs, so writes must still be refused without our header/origin."""
+    from fastapi.testclient import TestClient
+    from vaptui.server import app
+    c = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", cookies={"vapt_session": "test-session-token"})
+    assert c.post("/api/quickscan", json={"text": "a.com", "attested": True}).status_code == 403
+    assert c.post("/api/quickscan", json={"text": "a.com", "attested": True}, headers={"X-VAPT-UI": "1", "Origin": "http://evil.com"}).status_code == 403
+    assert c.get("/api/state").status_code == 200, "reads are idempotent and carry no secrets beyond what the page shows"
+    assert db.q("SELECT * FROM targets") == []

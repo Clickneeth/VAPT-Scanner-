@@ -68,8 +68,9 @@ async def guard(request: Request, call_next):
     # Another local user or process that can reach the port still cannot read or drive it.
     if not path.startswith("/static/"):
         if request.method == "GET" and path == "/" and _redeem_launch_code(request.query_params.get("t", "")) and config.SESSION_TOKEN:
-            r = RedirectResponse("/", status_code=303)           # swap the one-time code for an HttpOnly cookie
-            r.set_cookie(COOKIE, config.SESSION_TOKEN, httponly=True, samesite="strict", path="/", max_age=43200)
+            r = RedirectResponse("/", status_code=303)           # swap the one-time code for an HttpOnly cookie (Lax, not Strict: the launch page is a file:// page, and Chrome
+            # treats the redirect that follows as cross-site, so a Strict cookie would never be sent back)
+            r.set_cookie(COOKIE, config.SESSION_TOKEN, httponly=True, samesite="lax", path="/", max_age=43200)
             r.headers["Cache-Control"] = "no-store"
             return r
         if not _authed(request):
