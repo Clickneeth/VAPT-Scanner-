@@ -32,3 +32,28 @@ bash vapt_scanner.sh
 8. Vuln Scan — nuclei templates
 9. TLS Audit — testssl.sh (only when HTTPS is present)
 10. Web Server Scan — nikto (capped at 4 minutes)
+
+## Web console (webui/)
+
+A local, loopback-only UI around `vapt_scanner.sh`: drop targets, map every subdomain first, then choose what to scan.
+
+```bash
+webui/run.sh          # first run creates webui/venv; then open http://127.0.0.1:8770/
+```
+
+1. **Scope**: paste or drop domains and IPs, tick the authorisation box and state your basis (stored in the audit log).
+   Domains are mapped passively (subfinder, DNS, httpx liveness). Nothing is scanned yet.
+2. **Assets**: every discovered host with IPs, status, title and tech. Scan one, a selection, or all live hosts with a
+   Quick / Standard / Deep profile. Add extra IPs or hosts (each needs its own attestation).
+3. **Scans**: live progress, log, findings and what changed since the previous scan of that asset.
+4. **Findings**: latest result per asset, filter by severity, export CSV or JSON.
+
+Business rules (each has a `test_BRVxx_` test in `webui/tests/`): loopback only and no cross-site writes (V01, V02),
+authorisation attestation with a written basis (V03), link-local/multicast/reserved IPs refused (V04), subdomains kept
+only if truly under the target (V07), wildcard DNS flagged (V10), revoke stops scanning (V11), per-asset cooldown (V13),
+bulk and queue caps (V14), concurrency limit and one scan per asset (V15), no intrusive profile (V16), crash-safe state
+(V17), hard timeouts and cancel (V18), finding de-duplication and new/resolved diff (V19), risk score (V20), audit log
+(V21), CSV formula-injection guard (V22), hostile target input refused (V23), unreachable hosts report nothing (V24),
+hostile banners cannot inject terminal or Markdown (V25).
+
+Tests: `cd webui && venv/bin/pytest -q`. Only scan systems you are authorised to test.

@@ -324,15 +324,17 @@ report_line "## 2. Reachability"
 report_line ""
 
 info "Checking if target is reachable..."
-HTTP_CODE=$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" "$BASE_URL" 2>/dev/null || echo "000")
+# curl prints 000 itself on failure AND exits non-zero, so "|| echo 000" used to yield "000000" and the gate
+# failed open. Take whatever curl printed, then accept only a real 3-digit code that is not 000.
+HTTP_CODE=$(curl -sk --max-time 10 -o /dev/null -w "%{http_code}" "$BASE_URL" 2>/dev/null) || true
+[[ "$HTTP_CODE" =~ ^[1-5][0-9][0-9]$ ]] || HTTP_CODE="000"
 
 if [[ "$HTTP_CODE" == "000" ]]; then
-  error "Target is unreachable (no response). Stopping scan."
-  add_finding "INFO" "Target unreachable" "$BASE_URL returned no response"
+  error "Target is unreachable (no web response). Stopping scan."
   report_line "**Target unreachable — scan aborted at reachability gate.**"
   report_line ""
   echo "Report saved: $REPORT_FILE"
-  exit 1
+  exit 3      # 3 = unreachable; the web UI reports this as "no web response", not as findings
 fi
 
 success "Target responded with HTTP $HTTP_CODE"
