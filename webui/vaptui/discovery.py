@@ -89,8 +89,20 @@ def _still_discovering(target_id: int) -> bool:
     return bool(t and t["status"] == "discovering")
 
 
+def _connected_forbidden(j: dict) -> bool:
+    """BR-V04: look at what httpx actually connected to and resolved, not only at our earlier lookup."""
+    addrs = [j.get("host_ip")] + list(j.get("a") or []) + list(j.get("aaaa") or [])
+    return any(isinstance(a, str) and a and rules.forbidden_ip(a) for a in addrs)
+
+
 def _apply_probe(target_id: int, host: str, j: dict | None) -> None:
     if not j:
+        return
+    if _connected_forbidden(j):
+        # the probe reached (or was told about) a never-scanned address after our DNS check: keep nothing, exclude
+        db.run("UPDATE assets SET alive=0, url='', excluded=1, note=? WHERE target_id=? AND host=?",
+               ("Probe connected to a forbidden address range (link-local, multicast or reserved); excluded.",
+                target_id, host))
         return
     url = str(j.get("url", ""))[:300]
     if not url.startswith(("http://", "https://")):

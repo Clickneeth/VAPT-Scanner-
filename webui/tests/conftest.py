@@ -28,12 +28,14 @@ def fresh_db(monkeypatch):
     yield
 
 
-TOKEN = "test-launch-token"
+TOKEN = "test-session-token"
+CODE = "test-launch-code"
 
 
 @pytest.fixture(autouse=True)
 def launch_token(monkeypatch):
-    monkeypatch.setattr(config, "AUTH_TOKEN", TOKEN)
+    monkeypatch.setattr(config, "SESSION_TOKEN", TOKEN)
+    monkeypatch.setattr(config, "LAUNCH_CODE", CODE)
 
 
 @pytest.fixture()

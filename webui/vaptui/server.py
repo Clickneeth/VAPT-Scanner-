@@ -43,8 +43,22 @@ COOKIE = "vapt_session"
 
 
 def _authed(request: Request) -> bool:
-    tok = config.AUTH_TOKEN
+    tok = config.SESSION_TOKEN
     return bool(tok) and hmac.compare_digest(request.cookies.get(COOKIE, ""), tok)
+
+
+_exchange_lock = threading.Lock()
+
+
+def _redeem_launch_code(code: str) -> bool:
+    """BR-V26: the launch code is single use. After it is redeemed it is gone, so a copy left in browser history,
+    a screenshot or a file is worthless; the session cookie is a different random value."""
+    with _exchange_lock:
+        cur = config.LAUNCH_CODE
+        if cur and code and hmac.compare_digest(code, cur):
+            config.LAUNCH_CODE = None
+            return True
+    return False
 
 
 @app.middleware("http")
@@ -53,10 +67,9 @@ async def guard(request: Request, call_next):
     # BR-V26: a random per-launch token (printed at startup, file mode 0600) is the key to the whole console.
     # Another local user or process that can reach the port still cannot read or drive it.
     if not path.startswith("/static/"):
-        tok = config.AUTH_TOKEN
-        if request.method == "GET" and path == "/" and tok and hmac.compare_digest(request.query_params.get("t", ""), tok):
-            r = RedirectResponse("/", status_code=303)           # swap the URL token for an HttpOnly cookie
-            r.set_cookie(COOKIE, tok, httponly=True, samesite="strict", path="/")
+        if request.method == "GET" and path == "/" and _redeem_launch_code(request.query_params.get("t", "")) and config.SESSION_TOKEN:
+            r = RedirectResponse("/", status_code=303)           # swap the one-time code for an HttpOnly cookie
+            r.set_cookie(COOKIE, config.SESSION_TOKEN, httponly=True, samesite="strict", path="/", max_age=43200)
             r.headers["Cache-Control"] = "no-store"
             return r
         if not _authed(request):
@@ -382,19 +395,30 @@ def main() -> None:
     import webbrowser
 
     import uvicorn
-    config.AUTH_TOKEN = secrets.token_urlsafe(32)
+    config.LAUNCH_CODE = secrets.token_urlsafe(32)
+    config.SESSION_TOKEN = secrets.token_urlsafe(32)
     config.DATA.mkdir(parents=True, exist_ok=True)
-    os.chmod(config.DATA, 0o700)                                # the DB, logs and token are private to you
-    url = f"http://{config.HOST}:{config.PORT}/?t={config.AUTH_TOKEN}"
-    f = config.DATA / "launch_url.txt"
-    fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        fh.write(url + "\n")
-    os.chmod(f, 0o600)
-    print(f"\nVAPT Console is running. Open this link (it carries this launch's key):\n\n  {url}\n", flush=True)
+    os.chmod(config.DATA, 0o700)                                # the DB, logs and launch files are private to you
+    url = f"http://{config.HOST}:{config.PORT}/?t={config.LAUNCH_CODE}"
+
+    def private_file(name: str, text: str) -> Path:
+        path = config.DATA / name
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.chmod(path, 0o600)
+        return path
+
+    private_file("launch_url.txt", url + "\n")
+    # The browser is pointed at this 0600 file, so the code never appears in a process argument list (`ps` is
+    # readable by other local users). The page just redirects to the one-time link.
+    launch = private_file("launch.html", f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={url}">'
+                          f'<title>VAPT Console</title><p><a href="{url}">Open VAPT Console</a></p>')
+    print(f"\nVAPT Console is running. Open this one-time link (also in {config.DATA / 'launch_url.txt'}):\n\n  {url}\n",
+          flush=True)
     if os.environ.get("VAPT_UI_NO_BROWSER") != "1":
         try:
-            webbrowser.open(url)
+            webbrowser.open(launch.as_uri())
         except Exception:  # noqa: BLE001 - opening a browser is a convenience only
             pass
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="warning")

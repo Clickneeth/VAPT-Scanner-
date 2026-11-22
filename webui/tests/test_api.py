@@ -28,7 +28,7 @@ def test_BRV01_unknown_host_header_blocked(client):
 def test_BRV02_writes_need_custom_header_and_same_origin(client):
     from fastapi.testclient import TestClient
     from vaptui.server import app
-    bare = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", cookies={"vapt_session": "test-launch-token"})
+    bare = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", cookies={"vapt_session": "test-session-token"})
     assert bare.post("/api/parse", json={"text": "a.com"}).status_code == 403
     r = client.post("/api/parse", json={"text": "a.com"}, headers={"Origin": "http://evil.com"})
     assert r.status_code == 403
@@ -391,25 +391,59 @@ def test_BRV26_everything_needs_the_launch_token(client):
     assert db.q("SELECT * FROM targets") == []
 
 
-def test_BRV26_launch_url_token_becomes_httponly_samesite_cookie(client):
+def test_BRV26_launch_code_is_single_use_and_cookie_is_a_different_value(client):
     from fastapi.testclient import TestClient
     from vaptui.server import app
     c = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", follow_redirects=False)
     bad = c.get("/?t=wrong")
     assert bad.status_code == 401 and "set-cookie" not in bad.headers
-    ok = c.get("/?t=test-launch-token")
+    ok = c.get("/?t=test-launch-code")
     assert ok.status_code == 303 and ok.headers["location"] == "/"
-    cookie = ok.headers["set-cookie"].lower()
-    assert "httponly" in cookie and "samesite=strict" in cookie
+    cookie = ok.headers["set-cookie"]
+    assert "httponly" in cookie.lower() and "samesite=strict" in cookie.lower()
+    assert "test-launch-code" not in cookie and "test-session-token" in cookie, "cookie must not be the URL code"
     assert c.get("/api/meta").status_code == 200
+    again = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", follow_redirects=False)
+    assert again.get("/?t=test-launch-code").status_code == 401, "the link cannot be replayed"
+    assert again.get("/api/meta").status_code == 401
 
 
 def test_BRV26_server_with_no_token_set_refuses_everything(monkeypatch):
     from fastapi.testclient import TestClient
     from vaptui.server import app
-    monkeypatch.setattr(config, "AUTH_TOKEN", None)
+    monkeypatch.setattr(config, "SESSION_TOKEN", None)
+    monkeypatch.setattr(config, "LAUNCH_CODE", None)
     c = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", cookies={"vapt_session": ""})
     assert c.get("/api/meta").status_code == 401 and c.get("/?t=").status_code == 401
+
+
+def test_BRV26_browser_is_opened_with_a_file_path_never_the_secret(tmp_path, monkeypatch):
+    """`ps` shows process arguments to every local user, so the code must not be in them."""
+    import vaptui.server as srv
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda u, *a, **k: opened.append(u) or True)
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: None)
+    monkeypatch.setattr(config, "DATA", tmp_path)
+    monkeypatch.delenv("VAPT_UI_NO_BROWSER", raising=False)
+    srv.main()
+    assert len(opened) == 1 and opened[0].startswith("file://") and "t=" not in opened[0]
+    assert config.LAUNCH_CODE in (tmp_path / "launch.html").read_text()
+    assert oct((tmp_path / "launch.html").stat().st_mode)[-3:] == "600" and oct((tmp_path / "launch_url.txt").stat().st_mode)[-3:] == "600"
+    assert config.SESSION_TOKEN != config.LAUNCH_CODE
+
+
+def test_BRV04_probe_result_that_connected_to_a_forbidden_ip_is_dropped_and_excluded():
+    from vaptui import discovery
+    tid = db.run("INSERT INTO targets(kind,value,basis,authorised_at,created_at,status) VALUES ('domain','example.com','b',?,?,'ready')", (rules.now(), rules.now()))
+    discovery._upsert_asset(tid, "rebound.example.com", "subdomain", "discovery", ["93.184.216.34"], False)
+    discovery._apply_probe(tid, "rebound.example.com", {"url": "https://rebound.example.com", "status_code": 200,
+                                                         "title": "metadata!", "host_ip": "169.254.169.254"})
+    row = db.one("SELECT alive, excluded, url, title, note FROM assets WHERE host='rebound.example.com'")
+    assert row["alive"] == 0 and row["excluded"] == 1 and row["url"] == "" and row["title"] == ""
+    assert "forbidden" in row["note"]
+    discovery._upsert_asset(tid, "fine.example.com", "subdomain", "discovery", ["93.184.216.34"], False)
+    discovery._apply_probe(tid, "fine.example.com", {"url": "https://fine.example.com", "status_code": 200, "host_ip": "93.184.216.34", "a": ["93.184.216.34"]})
+    assert db.one("SELECT alive FROM assets WHERE host='fine.example.com'")["alive"] == 1
 
 
 def test_BRV04_manual_host_resolving_to_forbidden_range_is_excluded_not_probed(client, monkeypatch):

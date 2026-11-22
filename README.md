@@ -63,7 +63,8 @@ bulk and queue caps (V14), concurrency limit and one scan per asset (V15), no in
 hostile banners cannot inject terminal or Markdown (V25). Revoke and exclude hold even between queueing and launch,
 and a hostname that resolves to a never-scanned range is excluded and re-checked right before launch (V04, V11).
 
-Every launch generates a random key: the link carries it once, then a strict-same-site cookie keeps you signed in, so
-other local users or processes cannot drive the console (V26). The key file is `webui/data/launch_url.txt` (mode 0600).
+Every launch prints a one-time link. The browser is opened on a private local file (never a command-line argument), the
+link works exactly once and is swapped for a separate HttpOnly same-site cookie, so other local users or processes cannot
+drive the console (V26). Lost the cookie? Restart `webui/run.sh` for a fresh link (also saved in `webui/data/`, mode 0600).
 
 Tests: `cd webui && venv/bin/pytest -q`. Only scan systems you are authorised to test.

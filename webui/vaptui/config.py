@@ -11,7 +11,8 @@ DATA = Path(os.environ.get("VAPT_UI_DATA", WEBUI / "data"))
 DB_PATH = DATA / "console.db"
 SCANS_DIR = DATA / "scans"
 
-AUTH_TOKEN: str | None = None                         # set per launch by server.main(); None means nothing is authorised
+LAUNCH_CODE: str | None = None                        # one-time code in the launch link; consumed by the first exchange
+SESSION_TOKEN: str | None = None                      # the cookie value after that exchange; None means nothing is authorised
 HOST = "127.0.0.1"                                    # BR-V01: never listen on anything but loopback
 PORT = int(os.environ.get("VAPT_UI_PORT", "8770"))
 
