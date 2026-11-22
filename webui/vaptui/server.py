@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 import csv
+import hmac
 import io
 import json
+import secrets
 import shutil
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -37,8 +39,31 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' 
        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 
+COOKIE = "vapt_session"
+
+
+def _authed(request: Request) -> bool:
+    tok = config.AUTH_TOKEN
+    return bool(tok) and hmac.compare_digest(request.cookies.get(COOKIE, ""), tok)
+
+
 @app.middleware("http")
 async def guard(request: Request, call_next):
+    path = request.url.path
+    # BR-V26: a random per-launch token (printed at startup, file mode 0600) is the key to the whole console.
+    # Another local user or process that can reach the port still cannot read or drive it.
+    if not path.startswith("/static/"):
+        tok = config.AUTH_TOKEN
+        if request.method == "GET" and path == "/" and tok and hmac.compare_digest(request.query_params.get("t", ""), tok):
+            r = RedirectResponse("/", status_code=303)           # swap the URL token for an HttpOnly cookie
+            r.set_cookie(COOKIE, tok, httponly=True, samesite="strict", path="/")
+            r.headers["Cache-Control"] = "no-store"
+            return r
+        if not _authed(request):
+            if path.startswith("/api/"):
+                return JSONResponse({"error": "not authorised: open the launch URL printed when the server started"}, status_code=401)
+            return PlainTextResponse("VAPT Console: open the launch URL printed in the terminal (or in webui/data/launch_url.txt).",
+                                     status_code=401)
     if request.method not in ("GET", "HEAD"):
         origin = request.headers.get("origin")
         ok_origin = origin is None or origin in (f"http://127.0.0.1:{config.PORT}", f"http://localhost:{config.PORT}")
@@ -219,6 +244,13 @@ def add_asset(body: AssetIn):
 
     def probe_one() -> None:
         ips = [p.value] if kind == "ip" else discovery._resolve(p.value)
+        if any(rules.forbidden_ip(i) for i in ips):
+            # BR-V04: same rule as discovery: keep only safe addresses, exclude the asset, never probe it
+            db.run("UPDATE assets SET ips=?, excluded=1, note=? WHERE target_id=? AND host=?",
+                   (json.dumps([i for i in ips if not rules.forbidden_ip(i)]),
+                    "Resolves to a forbidden address range (link-local, multicast or reserved); excluded.",
+                    body.target_id, p.value))
+            return
         db.run("UPDATE assets SET ips=? WHERE target_id=? AND host=?", (json.dumps(ips), body.target_id, p.value))
         discovery._apply_probe(body.target_id, p.value, discovery._probe([p.value]).get(p.value))
 
@@ -346,8 +378,26 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 def main() -> None:
+    import os
+    import webbrowser
+
     import uvicorn
-    uvicorn.run("vaptui.server:app", host=config.HOST, port=config.PORT, log_level="warning")
+    config.AUTH_TOKEN = secrets.token_urlsafe(32)
+    config.DATA.mkdir(parents=True, exist_ok=True)
+    os.chmod(config.DATA, 0o700)                                # the DB, logs and token are private to you
+    url = f"http://{config.HOST}:{config.PORT}/?t={config.AUTH_TOKEN}"
+    f = config.DATA / "launch_url.txt"
+    fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(url + "\n")
+    os.chmod(f, 0o600)
+    print(f"\nVAPT Console is running. Open this link (it carries this launch's key):\n\n  {url}\n", flush=True)
+    if os.environ.get("VAPT_UI_NO_BROWSER") != "1":
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001 - opening a browser is a convenience only
+            pass
+    uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="warning")
 
 
 if __name__ == "__main__":

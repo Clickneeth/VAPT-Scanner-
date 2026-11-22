@@ -52,7 +52,7 @@ def _probe(hosts: list[str]) -> dict[str, dict]:
         try:
             r = subprocess.run(
                 [exe, "-l", str(lst), "-silent", "-json", "-timeout", "8", "-threads", "25", "-retries", "1",
-                 "-status-code", "-title", "-web-server", "-tech-detect", "-follow-redirects", "-rate-limit", "50"],
+                 "-status-code", "-title", "-web-server", "-tech-detect", "-rate-limit", "50"],
                 capture_output=True, text=True, timeout=config.DISCOVERY_TIMEOUT_S, check=False,
             )
         except subprocess.TimeoutExpired:
@@ -132,7 +132,8 @@ def discover(target_id: int) -> None:
                               hosts.get(h, []), wildcard and kind != "root")
             if not _still_discovering(target_id):
                 return
-            probed = _probe([h for h in names if hosts.get(h)])
+            # BR-V04: never probe a host that resolves anywhere forbidden (it is also excluded in _upsert_asset)
+            probed = _probe([h for h in names if hosts.get(h) and not any(rules.forbidden_ip(i) for i in hosts[h])])
             if not _still_discovering(target_id):
                 return
             for h in names:

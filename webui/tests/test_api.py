@@ -28,7 +28,7 @@ def test_BRV01_unknown_host_header_blocked(client):
 def test_BRV02_writes_need_custom_header_and_same_origin(client):
     from fastapi.testclient import TestClient
     from vaptui.server import app
-    bare = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}")
+    bare = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", cookies={"vapt_session": "test-launch-token"})
     assert bare.post("/api/parse", json={"text": "a.com"}).status_code == 403
     r = client.post("/api/parse", json={"text": "a.com"}, headers={"Origin": "http://evil.com"})
     assert r.status_code == 403
@@ -376,3 +376,57 @@ def test_BRV04_unresolvable_host_fails_closed_before_launch(client, monkeypatch,
     assert wait_status(sid, {"failed"}) == "failed"
     assert "does not resolve" in db.one("SELECT error FROM scans WHERE id=?", (sid,))["error"]
     assert not list(config.SCANS_DIR.glob("*/started.flag"))
+
+
+def test_BRV26_everything_needs_the_launch_token(client):
+    from fastapi.testclient import TestClient
+    from vaptui.server import app
+    anon = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", headers={"X-VAPT-UI": "1"})
+    assert anon.get("/api/state").status_code == 401
+    assert anon.post("/api/targets", json={"text": "a.com", **GOOD}).status_code == 401
+    assert anon.get("/").status_code == 401 and "launch URL" in anon.get("/").text
+    wrong = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", cookies={"vapt_session": "nope"})
+    assert wrong.get("/api/meta").status_code == 401
+    assert anon.get("/static/app.css").status_code == 200, "static assets carry no data"
+    assert db.q("SELECT * FROM targets") == []
+
+
+def test_BRV26_launch_url_token_becomes_httponly_samesite_cookie(client):
+    from fastapi.testclient import TestClient
+    from vaptui.server import app
+    c = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", follow_redirects=False)
+    bad = c.get("/?t=wrong")
+    assert bad.status_code == 401 and "set-cookie" not in bad.headers
+    ok = c.get("/?t=test-launch-token")
+    assert ok.status_code == 303 and ok.headers["location"] == "/"
+    cookie = ok.headers["set-cookie"].lower()
+    assert "httponly" in cookie and "samesite=strict" in cookie
+    assert c.get("/api/meta").status_code == 200
+
+
+def test_BRV26_server_with_no_token_set_refuses_everything(monkeypatch):
+    from fastapi.testclient import TestClient
+    from vaptui.server import app
+    monkeypatch.setattr(config, "AUTH_TOKEN", None)
+    c = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", cookies={"vapt_session": ""})
+    assert c.get("/api/meta").status_code == 401 and c.get("/?t=").status_code == 401
+
+
+def test_BRV04_manual_host_resolving_to_forbidden_range_is_excluded_not_probed(client, monkeypatch):
+    from vaptui import discovery
+    probed = []
+    monkeypatch.setattr(discovery, "_resolve", lambda h: ["169.254.169.254"])
+    monkeypatch.setattr(discovery, "_probe", lambda hs: probed.append(hs) or {})
+    tid = add_target(client)["added"][0]["id"]
+    assert client.post("/api/assets", json={"target_id": tid, "value": "meta.example.com", **GOOD}).status_code == 200
+    end = time.time() + 5
+    while time.time() < end and not db.one("SELECT excluded FROM assets WHERE host='meta.example.com'")["excluded"]:
+        time.sleep(0.05)
+    row = db.one("SELECT excluded, ips, note FROM assets WHERE host='meta.example.com'")
+    assert row["excluded"] == 1 and json.loads(row["ips"]) == [] and "forbidden" in row["note"]
+    assert probed == [], "the probe must never run against it"
+
+
+def test_BRV04_probe_never_follows_redirects():
+    src = (Path(__file__).resolve().parents[1] / "vaptui" / "discovery.py").read_text()
+    assert "-follow-redirects" not in src

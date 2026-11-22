@@ -44,7 +44,7 @@ bash vapt_scanner.sh
 A local, loopback-only UI around `vapt_scanner.sh`: drop targets, map every subdomain first, then choose what to scan.
 
 ```bash
-webui/run.sh          # first run creates webui/venv; then open http://127.0.0.1:8770/
+webui/run.sh          # first run creates webui/venv; it prints (and opens) a launch link with a per-launch key
 ```
 
 1. **Scope**: paste or drop domains and IPs, tick the authorisation box and state your basis (stored in the audit log).
@@ -62,5 +62,8 @@ bulk and queue caps (V14), concurrency limit and one scan per asset (V15), no in
 (V21), CSV formula-injection guard (V22), hostile target input refused (V23), unreachable hosts report nothing (V24),
 hostile banners cannot inject terminal or Markdown (V25). Revoke and exclude hold even between queueing and launch,
 and a hostname that resolves to a never-scanned range is excluded and re-checked right before launch (V04, V11).
+
+Every launch generates a random key: the link carries it once, then a strict-same-site cookie keeps you signed in, so
+other local users or processes cannot drive the console (V26). The key file is `webui/data/launch_url.txt` (mode 0600).
 
 Tests: `cd webui && venv/bin/pytest -q`. Only scan systems you are authorised to test.

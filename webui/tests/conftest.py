@@ -28,9 +28,18 @@ def fresh_db(monkeypatch):
     yield
 
 
+TOKEN = "test-launch-token"
+
+
+@pytest.fixture(autouse=True)
+def launch_token(monkeypatch):
+    monkeypatch.setattr(config, "AUTH_TOKEN", TOKEN)
+
+
 @pytest.fixture()
 def client():
     from fastapi.testclient import TestClient
     from vaptui.server import app
-    c = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", headers={"X-VAPT-UI": "1"})
+    c = TestClient(app, base_url=f"http://127.0.0.1:{config.PORT}", headers={"X-VAPT-UI": "1"},
+                   cookies={"vapt_session": TOKEN})
     return c

@@ -269,7 +269,7 @@ if require whois; then
   success "Registrar: $REGISTRAR | Expiry: $EXPIRY"
   report_line "### WHOIS"
   report_line "\`\`\`"
-  head -40 "$WHOIS_OUT" >> "$REPORT_FILE" 2>/dev/null || true
+  head -40 "$WHOIS_OUT" | append_stdin
   report_line "\`\`\`"
   report_line ""
 fi
@@ -542,7 +542,7 @@ if require katana; then
   fi
 
   report_line "\`\`\`"
-  head -50 "$KATANA_OUT" >> "$REPORT_FILE" 2>/dev/null || true
+  head -50 "$KATANA_OUT" | append_stdin
   report_line "\`\`\`"
   report_line ""
 fi

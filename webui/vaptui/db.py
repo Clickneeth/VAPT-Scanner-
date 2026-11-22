@@ -46,7 +46,7 @@ CREATE INDEX IF NOT EXISTS ix_findings_scan ON findings(scan_id);
 @contextmanager
 def conn() -> Iterator[sqlite3.Connection]:
     with _LOCK:
-        config.DATA.mkdir(parents=True, exist_ok=True)
+        config.DATA.mkdir(mode=0o700, parents=True, exist_ok=True)
         c = sqlite3.connect(config.DB_PATH, timeout=30)
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA foreign_keys=ON")
