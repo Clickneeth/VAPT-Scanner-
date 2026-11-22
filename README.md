@@ -16,6 +16,12 @@ G. Shankar Praneeth (126015102)
 - `testssl.sh` — TLS/SSL audit (protocols, ciphers, certificate, known TLS flaws)
 - `nikto` — Web server scan (dangerous files, misconfiguration; DoS tests excluded)
 
+## Responsible use
+
+This is a security testing tool. Run it only against systems you own or have explicit written permission to test.
+Unauthorised scanning is illegal in most countries. The console asks for an authorisation basis and keeps an audit log,
+but you are responsible for how you use it. Provided as is, with no warranty.
+
 ## Usage
 ```bash
 bash vapt_scanner.sh
