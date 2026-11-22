@@ -362,3 +362,17 @@ def test_BRV04_discovered_host_resolving_to_metadata_range_is_excluded(client, m
     discovery._upsert_asset(tid, "meta.example.com", "subdomain", "discovery", ["169.254.169.254", "93.184.216.34"], False)
     row = db.one("SELECT * FROM assets WHERE host='meta.example.com'")
     assert row["excluded"] == 1 and json.loads(row["ips"]) == ["93.184.216.34"] and "forbidden" in row["note"]
+
+
+def test_BRV04_unresolvable_host_fails_closed_before_launch(client, monkeypatch, tmp_path):
+    run_fake(monkeypatch, tmp_path, "#!/usr/bin/env bash\ntouch started.flag\n")
+    def boom(*a, **k):
+        raise OSError("dns down")
+    monkeypatch.setattr(runner.socket, "getaddrinfo", boom)
+    tid = add_target(client)["added"][0]["id"]
+    a = add_asset_row(tid, "nxdomain.example.com")
+    sid = client.post("/api/scans", json={"asset_ids": [a], "profile": "quick"}).json()["queued"][0]
+    runner._tick()
+    assert wait_status(sid, {"failed"}) == "failed"
+    assert "does not resolve" in db.one("SELECT error FROM scans WHERE id=?", (sid,))["error"]
+    assert not list(config.SCANS_DIR.glob("*/started.flag"))

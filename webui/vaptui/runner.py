@@ -104,11 +104,12 @@ def cancel(scan_id: int) -> bool:
 
 
 def _forbidden_resolution(host: str) -> str:
-    """First resolved address of `host` that falls in a never-scanned class, else ''. IP literals are checked too."""
+    """Why `host` must not be scanned right now, else ''. Fails CLOSED: a name that cannot be resolved is refused
+    too (the scanner's own reachability gate would stop on it anyway). IP literals are checked as well."""
     try:
         infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
     except OSError:
-        return ""                                          # unresolvable: the scanner's own gate reports it
+        return "no address (does not resolve)"
     for info in infos:
         addr = info[4][0]
         if rules.forbidden_ip(addr):
@@ -175,7 +176,8 @@ def _supervise(scan_id: int) -> None:
         arg = scan_target_arg(s)
         bad = _forbidden_resolution(s["host"])             # BR-V04: re-check DNS now (rebinding since discovery)
         if bad:
-            raise ValueError(f"{s['host']} now resolves to {bad}, an address class that is never scanned")
+            raise ValueError(f"{s['host']} was not scanned: {bad}" if bad.startswith("no address")
+                             else f"{s['host']} now resolves to {bad}, an address class that is never scanned")
         env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "LC_ALL", "USER", "TMPDIR")}
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + env.get("PATH", "/usr/bin:/bin")
         env.update(TERM="xterm", VAPT_SKIP_TOOLS=",".join(prof["skip"]), VAPT_FINDINGS_FILE=str(d / "findings.tsv"))
